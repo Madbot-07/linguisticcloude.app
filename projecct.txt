@@ -1,0 +1,380 @@
+```py
+"""
+Translation Service
+-------------------
+AI-powered language detection (langdetect) and neural machine translation
+via the Google Translate cloud backend (deep-translator). Handles chunking
+so documents of any length can be translated within API limits.
+"""
+
+from deep_translator import GoogleTranslator
+from langdetect import detect_langs, DetectorFactory, LangDetectException
+
+# Deterministic detection results
+DetectorFactory.seed = 0
+
+# Max characters per translation request (API hard limit is 5000)
+CHUNK_SIZE = 4500
+
+# langdetect ISO codes that differ from Google Translate codes
+CODE_FIXES = {
+    "zh-cn": "zh-CN",
+    "zh-tw": "zh-TW",
+    "he": "iw",
+    "fil": "tl",
+    "nb": "no",
+}
+
+
+class TranslationService:
+    def __init__(self):
+        # {'english': 'en', 'french': 'fr', ...}
+        self._name_to_code = GoogleTranslator().get_supported_languages(as_dict=True)
+        self._code_to_name = {code: name for name, code in self._name_to_code.items()}
+
+    # ------------------------------------------------------------------ #
+    # Languages
+    # ------------------------------------------------------------------ #
+    def get_languages(self):
+        """Return supported languages as [{code, name}, ...] sorted by name."""
+        languages = [
+            {"code": code, "name": name.title()}
+            for name, code in self._name_to_code.items()
+        ]
+        return sorted(languages, key=lambda item: item["name"])
+
+    def language_name(self, code: str) -> str:
+        return self._code_to_name.get(code, code).title()
+
+    # ------------------------------------------------------------------ #
+    # AI language detection
+    # ------------------------------------------------------------------ #
+    def detect_language(self, text: str) -> dict:
+        """Detect the dominant language of a text sample with confidence."""
+        sample = text.strip()[:5000]
+        if not sample:
+            return {"code": "unknown", "name": "Unknown", "confidence": 0.0}
+        try:
+            candidates = detect_langs(sample)
+        except LangDetectException:
+            return {"code": "unknown", "name": "Unknown", "confidence": 0.0}
+
+        best = candidates[0]
+        code = CODE_FIXES.get(best.lang, best.lang)
+        return {
+            "code": code,
+            "name": self.language_name(code),
+            "confidence": round(best.prob * 100, 1),
+            "alternatives": [
+                {
+                    "code": CODE_FIXES.get(c.lang, c.lang),
+                    "name": self.language_name(CODE_FIXES.get(c.lang, c.lang)),
+                    "confidence": round(c.prob * 100, 1),
+                }
+                for c in candidates[1:3]
+            ],
+        }
+
+    # ------------------------------------------------------------------ #
+    # Translation
+    # ------------------------------------------------------------------ #
+    def translate(self, text: str, target: str, source: str = "auto") -> str:
+        """Translate text of any length by chunking at line boundaries."""
+        if target not in self._code_to_name:
+            raise ValueError(f"Unsupported target language: {target}")
+        if source != "auto" and source not in self._code_to_name:
+            source = "auto"
+
+        translator = GoogleTranslator(source=source, target=target)
+        translated_chunks = []
+        for chunk in self._chunk_text(text):
+            if chunk.strip():
+                translated_chunks.append(translator.translate(chunk) or "")
+            else:
+                translated_chunks.append(chunk)
+        return "\n".join(translated_chunks)
+
+    @staticmethod
+    def _chunk_text(text: str):
+        """Split text into chunks under CHUNK_SIZE, preserving line breaks."""
+        chunks = []
+        current_lines = []
+        current_len = 0
+
+        for line in text.split("\n"):
+            # Hard-split single lines that exceed the limit on their own
+            while len(line) > CHUNK_SIZE:
+                split_at = line.rfind(" ", 0, CHUNK_SIZE)
+                if split_at <= 0:
+                    split_at = CHUNK_SIZE
+                head, line = line[:split_at], line[split_at:].lstrip()
+                if current_lines:
+                    chunks.append("\n".join(current_lines))
+                    current_lines, current_len = [], 0
+                chunks.append(head)
+
+            if current_len + len(line) + 1 > CHUNK_SIZE and current_lines:
+                chunks.append("\n".join(current_lines))
+                current_lines, current_len = [], 0
+            current_lines.append(line)
+            current_len += len(line) + 1
+
+        if current_lines:
+            chunks.append("\n".join(current_lines))
+        return chunks
+
+```
+
+```py
+"""
+Document Processor
+------------------
+Extracts plain text from uploaded documents (TXT, MD, CSV, PDF, DOCX)
+and rebuilds translated output files for download.
+"""
+
+import io
+
+from pypdf import PdfReader
+from docx import Document
+
+ALLOWED_EXTENSIONS = {"txt", "md", "csv", "pdf", "docx"}
+
+
+def allowed_file(filename: str) -> bool:
+    """Check whether the uploaded file has a supported extension."""
+    return "." in filename and get_extension(filename) in ALLOWED_EXTENSIONS
+
+
+def get_extension(filename: str) -> str:
+    """Return the lowercase extension of a filename (without the dot)."""
+    return filename.rsplit(".", 1)[-1].lower()
+
+
+def extract_text(file_stream, extension: str) -> str:
+    """Extract plain text from an uploaded file stream based on its type."""
+    if extension in ("txt", "md", "csv"):
+        return _extract_plain(file_stream)
+    if extension == "pdf":
+        return _extract_pdf(file_stream)
+    if extension == "docx":
+        return _extract_docx(file_stream)
+    raise ValueError(f"Unsupported file type: .{extension}")
+
+
+def _extract_plain(file_stream) -> str:
+    raw = file_stream.read()
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            return raw.decode(encoding)
+        except (UnicodeDecodeError, AttributeError):
+            continue
+    raise ValueError("Could not decode text file. Please use UTF-8 encoding.")
+
+
+def _extract_pdf(file_stream) -> str:
+    reader = PdfReader(file_stream)
+    if reader.is_encrypted:
+        try:
+            reader.decrypt("")
+        except Exception:
+            raise ValueError("This PDF is password-protected and cannot be read.")
+    pages = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        if text.strip():
+            pages.append(text.strip())
+    return "\n\n".join(pages)
+
+
+def _extract_docx(file_stream) -> str:
+    document = Document(file_stream)
+    blocks = []
+    for paragraph in document.paragraphs:
+        blocks.append(paragraph.text)
+    # Also pull text out of tables so nothing is lost
+    for table in document.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if cells:
+                blocks.append(" | ".join(cells))
+    return "\n".join(blocks)
+
+
+def build_txt(text: str) -> io.BytesIO:
+    """Package translated text as a UTF-8 .txt file."""
+    buffer = io.BytesIO(text.encode("utf-8"))
+    buffer.seek(0)
+    return buffer
+
+
+def build_docx(text: str, title: str = "") -> io.BytesIO:
+    """Package translated text as a .docx file, one paragraph per line."""
+    document = Document()
+    if title:
+        document.add_heading(title, level=1)
+    for line in text.split("\n"):
+        document.add_paragraph(line)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+```
+
+```py
+"""
+Cloud-Based Language Translation Service
+----------------------------------------
+Flask application exposing a REST API + dashboard for AI-powered
+document translation: upload -> auto-detect language -> translate -> download.
+"""
+
+import os
+import time
+
+from flask import Flask, jsonify, render_template, request, send_file
+from werkzeug.utils import secure_filename
+
+from services import document_processor as docs
+from services.translation_service import TranslationService
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB upload cap
+
+translation_service = TranslationService()
+
+
+# ---------------------------------------------------------------------- #
+# Pages
+# ---------------------------------------------------------------------- #
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+# ---------------------------------------------------------------------- #
+# REST API
+# ---------------------------------------------------------------------- #
+@app.route("/api/languages")
+def api_languages():
+    """List all languages supported by the translation cloud backend."""
+    return jsonify({"languages": translation_service.get_languages()})
+
+
+@app.route("/api/upload", methods=["POST"])
+def api_upload():
+    """Accept a document, extract its text and auto-detect the language."""
+    if "file" not in request.files or request.files["file"].filename == "":
+        return jsonify({"error": "No file was uploaded."}), 400
+
+    file = request.files["file"]
+    filename = secure_filename(file.filename)
+    if not docs.allowed_file(filename):
+        return jsonify({
+            "error": "Unsupported file type. Allowed: "
+                     + ", ".join(sorted(docs.ALLOWED_EXTENSIONS))
+        }), 400
+
+    try:
+        text = docs.extract_text(file.stream, docs.get_extension(filename))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        return jsonify({"error": "Failed to read the document. It may be corrupted."}), 400
+
+    if not text.strip():
+        return jsonify({"error": "No readable text found in this document "
+                                 "(scanned/image-only PDFs are not supported)."}), 400
+
+    detection = translation_service.detect_language(text)
+    return jsonify({
+        "filename": filename,
+        "text": text,
+        "detected": detection,
+        "stats": {
+            "characters": len(text),
+            "words": len(text.split()),
+            "lines": text.count("\n") + 1,
+        },
+    })
+
+
+@app.route("/api/detect", methods=["POST"])
+def api_detect():
+    """Auto-detect the language of raw text (for pasted/edited content)."""
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "")
+    if not text.strip():
+        return jsonify({"error": "No text provided."}), 400
+    return jsonify({"detected": translation_service.detect_language(text)})
+
+
+@app.route("/api/translate", methods=["POST"])
+def api_translate():
+    """Translate text into the requested target language."""
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "")
+    target = data.get("target", "")
+    source = data.get("source", "auto") or "auto"
+
+    if not text.strip():
+        return jsonify({"error": "There is no text to translate."}), 400
+    if not target:
+        return jsonify({"error": "Please choose a target language."}), 400
+
+    started = time.time()
+    try:
+        translated = translation_service.translate(text, target=target, source=source)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        return jsonify({"error": "Translation cloud service is unreachable. "
+                                 "Check your internet connection and try again."}), 502
+
+    return jsonify({
+        "translated": translated,
+        "target": target,
+        "target_name": translation_service.language_name(target),
+        "elapsed": round(time.time() - started, 2),
+        "stats": {
+            "characters": len(translated),
+            "words": len(translated.split()),
+        },
+    })
+
+
+@app.route("/api/download", methods=["POST"])
+def api_download():
+    """Package translated text as a downloadable .txt or .docx file."""
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "")
+    fmt = data.get("format", "txt")
+    base = os.path.splitext(secure_filename(data.get("filename") or "document"))[0]
+    lang = data.get("target", "translated")
+
+    if not text.strip():
+        return jsonify({"error": "Nothing to download yet."}), 400
+
+    if fmt == "docx":
+        buffer = docs.build_docx(text)
+        mimetype = ("application/vnd.openxmlformats-officedocument"
+                    ".wordprocessingml.document")
+        name = f"{base}_{lang}.docx"
+    else:
+        buffer = docs.build_txt(text)
+        mimetype = "text/plain"
+        name = f"{base}_{lang}.txt"
+
+    return send_file(buffer, mimetype=mimetype, as_attachment=True, download_name=name)
+
+
+@app.errorhandler(413)
+def too_large(_):
+    return jsonify({"error": "File is too large. Maximum size is 16 MB."}), 413
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5050, debug=True)
+
+```

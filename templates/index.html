@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LinguisticCloud — AI Document Translation Service</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/logo.png') }}">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <header class="topbar">
+        <div class="brand">
+            <img class="brand-icon" src="{{ url_for('static', filename='img/logo.png') }}" alt="LinguisticCloud logo">
+            <div>
+                <h1>LinguisticCloud</h1>
+                <p>Cloud-Based AI Language Translation Service</p>
+            </div>
+        </div>
+        <div class="status-pill" id="cloudStatus">
+            <span class="dot"></span> Cloud Connected
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Step 1: Upload -->
+        <section class="card" id="uploadCard">
+            <div class="card-head">
+                <span class="step-badge">1</span>
+                <div>
+                    <h2>Upload Document</h2>
+                    <p>PDF, DOCX, TXT, MD or CSV — up to 16 MB</p>
+                </div>
+            </div>
+            <div class="dropzone" id="dropzone">
+                <input type="file" id="fileInput" accept=".pdf,.docx,.txt,.md,.csv" hidden>
+                <div class="dz-icon">📄</div>
+                <p class="dz-title">Drag &amp; drop your document here</p>
+                <p class="dz-sub">or</p>
+                <button class="btn btn-primary" id="browseBtn" type="button">Browse Files</button>
+            </div>
+            <div class="file-chip hidden" id="fileChip">
+                <span id="fileChipName"></span>
+                <span class="file-chip-meta" id="fileChipMeta"></span>
+                <button class="chip-close" id="clearFileBtn" title="Remove file">✕</button>
+            </div>
+        </section>
+
+        <!-- Step 2: Detection result -->
+        <section class="card hidden" id="detectCard">
+            <div class="card-head">
+                <span class="step-badge">2</span>
+                <div>
+                    <h2>AI Language Detection</h2>
+                    <p>Automatically detected from your document</p>
+                </div>
+            </div>
+            <div class="detect-grid">
+                <div class="detect-main">
+                    <span class="detect-label">Detected Language</span>
+                    <span class="detect-lang" id="detectedLang">—</span>
+                    <div class="confidence-bar"><div id="confidenceFill"></div></div>
+                    <span class="detect-conf" id="detectedConf"></span>
+                </div>
+                <div class="detect-stats" id="docStats"></div>
+            </div>
+        </section>
+
+        <!-- Step 3: Translate -->
+        <section class="card hidden" id="translateCard">
+            <div class="card-head">
+                <span class="step-badge">3</span>
+                <div>
+                    <h2>Translate</h2>
+                    <p>Choose a target language from the cloud catalogue</p>
+                </div>
+            </div>
+            <div class="translate-controls">
+                <div class="select-group">
+                    <label for="sourceLang">Source</label>
+                    <select id="sourceLang"><option value="auto">Auto-Detect (AI)</option></select>
+                </div>
+                <div class="swap-arrow">→</div>
+                <div class="select-group">
+                    <label for="targetLang">Target</label>
+                    <select id="targetLang"></select>
+                </div>
+                <button class="btn btn-primary btn-lg" id="translateBtn">
+                    <span id="translateBtnText">Translate Document</span>
+                </button>
+            </div>
+
+            <div class="panes">
+                <div class="pane">
+                    <div class="pane-head">
+                        <h3>Original</h3>
+                        <span class="pane-meta" id="originalMeta"></span>
+                    </div>
+                    <textarea id="originalText" spellcheck="false" placeholder="Document text appears here…"></textarea>
+                </div>
+                <div class="pane">
+                    <div class="pane-head">
+                        <h3>Translation <span class="pane-lang" id="translatedLangTag"></span></h3>
+                        <span class="pane-meta" id="translatedMeta"></span>
+                    </div>
+                    <div class="pane-overlay hidden" id="translateSpinner">
+                        <div class="spinner"></div>
+                        <p>Translating in the cloud…</p>
+                    </div>
+                    <textarea id="translatedText" spellcheck="false" readonly placeholder="Translation appears here…"></textarea>
+                </div>
+            </div>
+        </section>
+
+        <!-- Step 4: Download -->
+        <section class="card hidden" id="downloadCard">
+            <div class="card-head">
+                <span class="step-badge">4</span>
+                <div>
+                    <h2>Export Result</h2>
+                    <p>Download your translated document</p>
+                </div>
+            </div>
+            <div class="download-row">
+                <button class="btn btn-outline" id="copyBtn">📋 Copy Text</button>
+                <button class="btn btn-outline" id="downloadTxtBtn">⬇ Download .TXT</button>
+                <button class="btn btn-outline" id="downloadDocxBtn">⬇ Download .DOCX</button>
+            </div>
+        </section>
+    </main>
+
+    <div class="toast hidden" id="toast"></div>
+
+    <footer class="footer">
+        © 2026 Linguistic CLoud . All rights reserved.
+         Google Translate Cloud · 100+ Languages
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
